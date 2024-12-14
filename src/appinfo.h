@@ -6,7 +6,7 @@
 // These should be updated only in the commits
 // tagging a new version.
 #define VERSION_MAJOR 0
-#define VERSION_MINOR 91
+#define VERSION_MINOR 92
 
 #define VENDOR  "codersnotes.com"
 
@@ -15,4 +15,4 @@
 
 // Update this whenever backwards-incompatible changes
 // are made to the profiling results file format.
-#define FORMAT_VERSION "0.90"
+#define FORMAT_VERSION "0.92"

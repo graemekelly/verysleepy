@@ -1,7 +1,7 @@
 ﻿Very Sleepy [![Build status](https://ci.appveyor.com/api/projects/status/5gf55tjd7mc80b05/branch/master?svg=true)](https://ci.appveyor.com/project/CyberShadow/verysleepy/branch/master)
 -----------
 
-This is [Very Sleepy](http://www.codersnotes.com/sleepy), a polling Windows CPU profiler with a wxWidgets-based GUI.
+This is [Very Sleepy](http://www.codersnotes.com/sleepy), a sampling CPU profiler for Windows with a wxWidgets-based GUI.
 
 ![Very Sleepy screenshot](https://dump.thecybershadow.net/12df19e403014f88f368da4c2d2482a2/1.png)
 
@@ -25,7 +25,15 @@ For the latest development version, you can download [the latest AppVeyor artifa
 
 ### History
 
-##### Version 0.91 (under development):
+##### Version 0.92 (under development):
+
+* Do not include time while paused in sample durations
+* Add command-line switch `/d` to wait before starting profiler
+* Contributed by [aaalexandrov](https://github.com/aaalexandrov):
+    * Add sample filtering by thread ([#86](https://github.com/VerySleepy/verysleepy/pull/86))
+    * Profile new threads as they are created ([#88](https://github.com/VerySleepy/verysleepy/pull/88))
+
+##### Version 0.91 (2021-08-19):
 
 * Rename project back to Very Sleepy (this fork repository is now the official repository)
 * Use [Dr. MinGW](https://github.com/jrfonseca/drmingw) to resolve MinGW symbols by default
@@ -45,6 +53,20 @@ For the latest development version, you can download [the latest AppVeyor artifa
     * Improved handling of processes with many threads ([#38](https://github.com/VerySleepy/verysleepy/pull/38))
 * Contributed by [Bernhard Schelling](https://github.com/schellingb):
     * Added Callgrind format file export feature ([#46](https://github.com/VerySleepy/verysleepy/pull/46))
+    * Fixed symbols (PDB files) not being unloaded after detaching ([#57](https://github.com/VerySleepy/verysleepy/pull/57))
+    * Improved jumping to source lines from list views ([#58](https://github.com/VerySleepy/verysleepy/pull/58))
+* Contributed by [rammerchoi](https://github.com/RammerChoi):
+    * Added command-line switch '/mt' and '/mbt' ([#48](https://github.com/VerySleepy/verysleepy/pull/48))
+* Contributed by [Graeme Kelly](https://github.com/graemekelly):
+    * Added display of thread names on threads lists ([#60](https://github.com/VerySleepy/verysleepy/pull/60))
+    * Added column headers to exported CSV files ([#62](https://github.com/VerySleepy/verysleepy/pull/62))
+* Contributed by [Yujiang Wang](https://github.com/AlanIWBFT):
+    * Fixed missing buttons for very long paths ([#65](https://github.com/VerySleepy/verysleepy/pull/65))
+    * Updated DbgHelp to 10.0.17763.1 ([#65](https://github.com/VerySleepy/verysleepy/pull/65))
+* Contributed by [djdron](https://github.com/djdron):
+    * Improved HDPI support ([#74](https://github.com/VerySleepy/verysleepy/pull/74))
+    * Fixed some memory leaks ([#75](https://github.com/VerySleepy/verysleepy/pull/75))
+    * Updated Dr.MinGW ([#77](https://github.com/VerySleepy/verysleepy/pull/77))
 
 ##### Version 0.90 (2014-12-23):
 

@@ -25,6 +25,8 @@ http://www.gnu.org/copyleft/gpl.html..
 
 #include "../wxprofilergui/profilergui.h"
 #include "profilerthread.h"
+#include "threadinfo.h"
+#include "debugger.h"
 #include <wx/wfstream.h>
 #include <wx/zipstrm.h>
 #include <wx/txtstrm.h>
@@ -40,15 +42,25 @@ http://www.gnu.org/copyleft/gpl.html..
 
 // DE: 20090325: Profiler has a list of threads to profile
 // RM: 20130614: Profiler time can now be limited (-1 = until cancelled)
-ProfilerThread::ProfilerThread(HANDLE target_process_, const std::vector<HANDLE>& target_threads, SymbolInfo *sym_info_)
+ProfilerThread::ProfilerThread(HANDLE target_process_, const std::vector<HANDLE>& target_threads, SymbolInfo *sym_info_, Debugger *debugger_)
 :	profilers(),
 	target_process(target_process_),
-	sym_info(sym_info_)
+	sym_info(sym_info_),
+	debugger(debugger_)
 {
-	// DE: 20090325: Profiler has a list of threads to profile, one Profiler instance per thread
-	profilers.reserve(target_threads.size());
-	for (auto it = target_threads.begin(); it != target_threads.end(); ++it)
-		profilers.push_back(Profiler(target_process_, *it, callstacks, flatcounts));
+	// AA: 20210822: If we have a debugger, it will report all available threads
+	//               So, only use the passed vector when we have no debugger
+	if (!debugger)
+	{
+		// DE: 20090325: Profiler has a list of threads to profile, one Profiler instance per thread
+		profilers.reserve(target_threads.size());
+		for (HANDLE thread_h : target_threads)
+		{
+			DWORD thread_id = GetThreadId(thread_h);
+			profilers.push_back(Profiler(target_process_, thread_h, thread_id, callstacks));
+			thread_names[thread_id] = getThreadDescriptorName(thread_h);
+		}
+	}
 
 	numsamplessofar = 0;
 	done = false;
@@ -57,6 +69,7 @@ ProfilerThread::ProfilerThread(HANDLE target_process_, const std::vector<HANDLE>
 	cancelled = false;
 	commit_suicide = false;
 	symbolsPermille = 0;
+	duration = 0;
 	numThreadsRunning = (int)target_threads.size();
 	status = L"Initializing";
 
@@ -66,6 +79,7 @@ ProfilerThread::ProfilerThread(HANDLE target_process_, const std::vector<HANDLE>
 
 ProfilerThread::~ProfilerThread()
 {
+	delete debugger;
 }
 
 
@@ -76,6 +90,8 @@ void ProfilerThread::sample(const SAMPLE_TYPE timeSpent)
 	//      to re-schedule, and if we did them in sequence, it'll always schedule the first one.
 	//      This starves the other N-1 threads. For lack of a better option, using a shuffle
 	//      at least re-schedules them evenly.
+
+	duration += timeSpent;
 
 	const size_t count = profilers.size();
 	if ( count == 0)
@@ -91,16 +107,17 @@ void ProfilerThread::sample(const SAMPLE_TYPE timeSpent)
 		std::swap( order[i], order[n] );
 	}
 
-	int numSuccessful = 0;
+	char *failedProfilers = (char *)alloca(count);
+	memset(failedProfilers, 0, count);
+
 	for (size_t n = 0;n < count; ++n)
 	{
 		Profiler& profiler = profilers[order[n]];
 		try {
 			if (profiler.sampleTarget(timeSpent, sym_info))
-			{
 				++numsamplessofar;
-				++numSuccessful;
-			}
+			else
+				failedProfilers[order[n]] = true;
 		}
 		catch (const ProfilerExcep& e)
 		{
@@ -109,7 +126,15 @@ void ProfilerThread::sample(const SAMPLE_TYPE timeSpent)
 		}
 	}
 
-	numThreadsRunning = numSuccessful;
+	for (ptrdiff_t n = (ptrdiff_t)count-1; n >= 0; --n)
+	{
+		if (!failedProfilers[n] || !profilers[n].targetExited())
+			continue;
+		profilers[n] = profilers.back();
+		profilers.erase(std::prev(profilers.end()));
+	}
+
+	numThreadsRunning = (int)profilers.size();
 }
 
 class ProcPred
@@ -137,8 +162,12 @@ void ProfilerThread::sampleLoop()
 		if (paused)
 		{
 			Sleep(100);
+			QueryPerformanceCounter(&prev);
 			continue;
 		}
+
+		if (debugger)
+			debugger->update();
 
 		QueryPerformanceCounter(&now);
 
@@ -146,7 +175,7 @@ void ProfilerThread::sampleLoop()
 		double t = (double)diff / (double)freq.QuadPart;
 
 		__int64 elapsed = now.QuadPart - start.QuadPart;
-		if (!minidump_saved && prefs.saveMinidump>=0 && elapsed >= prefs.saveMinidump * freq.QuadPart)
+		if (!minidump_saved && prefs.saveMinidump.GetValue()>=0 && elapsed >= prefs.saveMinidump.GetValue() * freq.QuadPart)
 		{
 			minidump_saved = true;
 			status = L"Saving minidump";
@@ -157,7 +186,7 @@ void ProfilerThread::sampleLoop()
 
 		sample(t);
 
-		int ms = 100 / prefs.throttle;
+		int ms = 100 / prefs.throttle.GetValue();
 		Sleep(ms);
 
 		prev = now;
@@ -211,18 +240,12 @@ void ProfilerThread::saveData()
 	beginProgress(L"Summarizing results");
 
 	std::map<PROFILER_ADDR, bool> used_addresses;
-	SAMPLE_TYPE totalCounts = 0;
-
-	for (auto i = flatcounts.begin(); i != flatcounts.end(); ++i)
-	{
-		PROFILER_ADDR addr = i->first;
-		used_addresses[addr] = true;
-		totalCounts += i->second;
-	}
+	std::map<DWORD, bool> used_thread_ids;
 
 	for (auto i = callstacks.begin(); i != callstacks.end(); ++i)
 	{
 		const CallStack &callstack = i->first;
+		used_thread_ids[callstack.thread_id] = true;
 		for (size_t n=0;n<callstack.depth;n++)
 		{
 			used_addresses[callstack.addr[n]] = true;
@@ -256,35 +279,40 @@ void ProfilerThread::saveData()
 	}
 
 	//------------------------------------------------------------------------
-	beginProgress(L"Saving IP counts", flatcounts.size());
-	zip.PutNextEntry(_T("IPCounts.txt"));
+	beginProgress(L"Saving callstacks", callstacks.size());
+	zip.PutNextEntry(_T("Callstacks.txt"));
 
-	txt << totalCounts << "\n";
-
-	for (auto i = flatcounts.begin(); i != flatcounts.end(); ++i)
+	for (auto i = callstacks.begin(); i != callstacks.end();)
 	{
-		PROFILER_ADDR addr = i->first;
-		SAMPLE_TYPE count = i->second;
+		const CallStack &callstack = i->first;
 
-		txt << ::toHexString(addr) << " " << count << "\n";
+		// write callstack addresses
+		for( size_t d=0;d<callstack.depth;d++ )
+			txt << " " << ::toHexString(callstack.addr[d]);
+		txt << "\n";
+
+		// write pairs of thread_id and count for each identical callstack
+		do
+		{
+			txt << " " << (unsigned)i->first.thread_id;
+			txt << " " << i->second;
+			++i;
+		}
+		while ( i != callstacks.end() && !callstack.isBefore(i->first, false) );
+		txt << "\n";
 
 		if (updateProgress())
 			return;
 	}
 
 	//------------------------------------------------------------------------
-	beginProgress(L"Saving callstacks", callstacks.size());
-	zip.PutNextEntry(_T("Callstacks.txt"));
+	beginProgress(L"Saving threads", used_thread_ids.size());
+	zip.PutNextEntry(_T("Threads.txt"));
 
-	for (auto i = callstacks.begin(); i != callstacks.end(); ++i)
+	for (auto &tid : used_thread_ids)
 	{
-		const CallStack &callstack = i->first;
-		SAMPLE_TYPE count = i->second;
-
-		txt << count;
-		for( size_t d=0;d<callstack.depth;d++ )
-			txt << " " << ::toHexString(callstack.addr[d]);
-		txt << "\n";
+		txt << (unsigned)tid.first << "\n";
+		txt << thread_names[tid.first] << "\n";
 
 		if (updateProgress())
 			return;
@@ -308,7 +336,13 @@ void ProfilerThread::run()
 {
 	wxLog::EnableLogging();
 
-	startTick = GetTickCount();
+	if (debugger)
+		debugger->attach([this](Debugger::NotifyData const &notification) {
+			if (notification.eventType != Debugger::NOTIFY_NEW_THREAD)
+				return;
+			profilers.push_back(Profiler(target_process, notification.threadHandle, notification.threadId, callstacks));
+			thread_names[notification.threadId] = getThreadDescriptorName(notification.threadHandle);
+		});
 
 	status = NULL;
 	try
@@ -331,20 +365,18 @@ void ProfilerThread::run()
 
 	status = L"Exiting";
 
+	if (debugger)
+		debugger->detach();
+
 	if (cancelled)
 		return;
 
 	setPriority(THREAD_PRIORITY_NORMAL);
 
-	DWORD endTick = GetTickCount();
-	int diff = endTick - startTick;
-	duration = diff / 1000.0;
-
 	saveData();
 
 	done = true;
 }
-
 
 void ProfilerThread::error(const std::wstring& what)
 {

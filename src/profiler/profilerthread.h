@@ -34,6 +34,8 @@ http://www.gnu.org/copyleft/gpl.html..
 // DE: 20090325 Profiler thread now has a vector of threads to profile
 #include <vector>
 
+class Debugger;
+
 /*=====================================================================
 ProfilerThread
 --------------
@@ -56,7 +58,7 @@ public:
 	=====================================================================*/
 	// DE: 20090325 Profiler thread now has a vector of threads to profile
 	// RM: 20130614 Profiler time can now be limited (-1 = until cancelled)
-	ProfilerThread(HANDLE target_process, const std::vector<HANDLE>& target_threads, SymbolInfo *sym_info);
+	ProfilerThread(HANDLE target_process, const std::vector<HANDLE>& target_threads, SymbolInfo *sym_info, Debugger *debugger);
 
 	virtual ~ProfilerThread();
 
@@ -68,6 +70,7 @@ public:
 	bool getDone() const { return done; }
 	bool getFailed() const { return failed; }
 	const wchar_t* getStatus() const { return status; }
+	SAMPLE_TYPE getDuration() const { return duration; }
 	int getSampleProgress() const { return numsamplessofar; }
 	void getSymbolsProgress(int *permille, std::wstring *stage) const { *permille = symbolsPermille; *stage = symbolsStage; }
 	const std::wstring &getFilename() const { return filename; }
@@ -88,13 +91,13 @@ private:
 	void beginProgress(std::wstring stage, int total=0);
 	bool updateProgress();
 
-	// DE: 20090325 callstacks and flatcounts are shared for all threads to profile
+	// DE: 20090325 callstacks are shared for all threads to profile
 	std::map<CallStack, SAMPLE_TYPE> callstacks;
-	std::map<PROFILER_ADDR, SAMPLE_TYPE> flatcounts;
 
 	// DE: 20090325 one Profiler instance per thread to profile
 	std::vector<Profiler> profilers;
-	double duration;
+	Debugger *debugger;
+	SAMPLE_TYPE duration;
 	//int numsamples;
 	const wchar_t* status;
 	int numsamplessofar;
@@ -105,6 +108,7 @@ private:
 	bool cancelled;
 	bool commit_suicide;
 	HANDLE target_process;
+	std::map<DWORD, std::wstring> thread_names;
 	std::wstring filename;
 	std::wstring minidump;
 	SymbolInfo *sym_info;

@@ -26,6 +26,7 @@ http://www.gnu.org/copyleft/gpl.html.
 #include <wx/mstream.h>
 #include <wx/apptrait.h>
 #include <wx/msw/apptrait.h>
+#include <wx/msgdlg.h>
 #include <memory>
 
 #include "threadpicker.h"
@@ -33,6 +34,7 @@ http://www.gnu.org/copyleft/gpl.html.
 #include "mainwin.h"
 #include "../utils/dbginterface.h"
 #include "../profiler/profilerthread.h"
+#include "../profiler/debugger.h"
 #include "../utils/stringutils.h"
 #include "../utils/osutils.h"
 #include <wx/stdpaths.h>
@@ -42,6 +44,7 @@ http://www.gnu.org/copyleft/gpl.html.
 #include "aboutdlg.h"
 #include "../utils/except.h"
 #include "../appinfo.h"
+#include <limits>
 
 // DE: 20090325 Linking fails in debug target under visual studio 2005
 // RJM: works for me :-/
@@ -57,25 +60,37 @@ http://www.gnu.org/copyleft/gpl.html.
 
 static const wxCmdLineEntryDesc g_cmdLineDesc[] =
 {
-	{ wxCMD_LINE_SWITCH, "h", "", "Displays help on the command line parameters.",			wxCMD_LINE_VAL_NONE, wxCMD_LINE_OPTION_HELP },
-	{ wxCMD_LINE_OPTION, "r", "", "Runs an executable and profiles it.",					wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
-	{ wxCMD_LINE_OPTION, "a", "", "Attaches to a process (by its PID) and profiles it.",	wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
-	{ wxCMD_LINE_OPTION, "i", "", "Loads an existing profile from a file.",					wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
-	{ wxCMD_LINE_OPTION, "o", "", "Saves the captured profile to the given file.",			wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
-	{ wxCMD_LINE_OPTION, "t", "", "Stops capturing automatically after N seconds time.",	wxCMD_LINE_VAL_NUMBER, wxCMD_LINE_PARAM_OPTIONAL },
-	{ wxCMD_LINE_SWITCH, "q", "", "Quiet mode (no error messages will be shown).",			wxCMD_LINE_VAL_NONE },
-	{ wxCMD_LINE_SWITCH, "", "wine", "Use Wine DbgHelp.",									wxCMD_LINE_VAL_NONE },
-	{ wxCMD_LINE_SWITCH, "", "mingw", "Use Dr. MinGW DbgHelp.",							wxCMD_LINE_VAL_NONE },
-	{ wxCMD_LINE_SWITCH, "mt", "", "When attaching a process, profiles only main thread.",			wxCMD_LINE_VAL_NONE },
-	{ wxCMD_LINE_SWITCH, "mbt", "", "When attaching a process, profiles only most busy thread.",	wxCMD_LINE_VAL_NONE },
-	{ wxCMD_LINE_PARAM, NULL, NULL, "Loads an existing profile from a file.",				wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL},
-
+	{ wxCMD_LINE_SWITCH, "h", "", "Displays help on the command line parameters.",          wxCMD_LINE_VAL_NONE, wxCMD_LINE_OPTION_HELP },
+	{ wxCMD_LINE_OPTION, "r", "", "Runs an executable and profiles it.",                    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	{ wxCMD_LINE_OPTION, "a", "", "Attaches to a process (by its PID) and profiles it.",    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	{ wxCMD_LINE_OPTION, "i", "", "Loads an existing profile from a file.",                 wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	{ wxCMD_LINE_OPTION, "o", "", "Saves the captured profile to the given file.",          wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	{ wxCMD_LINE_OPTION, "d", "", "Waits N seconds before beginning capture.",              wxCMD_LINE_VAL_NUMBER, wxCMD_LINE_PARAM_OPTIONAL },
+	{ wxCMD_LINE_OPTION, "t", "", "Stops capturing automatically after N seconds time.",    wxCMD_LINE_VAL_NUMBER, wxCMD_LINE_PARAM_OPTIONAL },
+	{ wxCMD_LINE_SWITCH, "q", "", "Quiet mode (no error messages will be shown).",          wxCMD_LINE_VAL_NONE },
+	{ wxCMD_LINE_SWITCH, "", "wine", "Use Wine DbgHelp.",                                   wxCMD_LINE_VAL_NONE },
+	{ wxCMD_LINE_SWITCH, "", "mingw", "Use Dr. MinGW DbgHelp.",                             wxCMD_LINE_VAL_NONE },
+	{ wxCMD_LINE_SWITCH, "mt", "", "When attaching a process, profiles only main thread.",  wxCMD_LINE_VAL_NONE },
+	{ wxCMD_LINE_SWITCH, "mbt", "", "When attaching a process, profiles only most busy thread.",    wxCMD_LINE_VAL_NONE },
+	{ wxCMD_LINE_OPTION, "thread", "", "Profiles the specified thread(s) in the process, multiple threads must be in a comma-delimited list without spaces (See /a for specifying the process ID). Examples: `/thread:2124` or `/thread:8086,24601,42`",    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	
+	{ wxCMD_LINE_OPTION, "minidump", "", "capture a minidump after N seconds time.",        wxCMD_LINE_VAL_NUMBER, wxCMD_LINE_PARAM_OPTIONAL },
+	{ wxCMD_LINE_OPTION, "samplerate", "", "set the sample rate speed",                     wxCMD_LINE_VAL_NUMBER, wxCMD_LINE_PARAM_OPTIONAL },
+	{ wxCMD_LINE_OPTION, "symsearchpath", "", "Specify the symbol search path.",            wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	{ wxCMD_LINE_OPTION, "symcachedir", "", "Specify the directory to use for the symbol cache.", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	{ wxCMD_LINE_SWITCH, "usesymserver", "", "Use a symbol server.",                        wxCMD_LINE_VAL_NONE, wxCMD_LINE_SWITCH_NEGATABLE },
+	{ wxCMD_LINE_OPTION, "symserver", "", "Specify the symbol server path/URL.",            wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL|wxCMD_LINE_NEEDS_SEPARATOR },
+	
+	{ wxCMD_LINE_PARAM, NULL, NULL, "Loads an existing profile from a file.",               wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL},
+	
 	{ wxCMD_LINE_NONE }
 };
 
 wxIcon sleepy_icon;
 std::wstring cmdline_load, cmdline_save, cmdline_run, cmdline_attach;
+long cmdline_delay = 0;
 long cmdline_timeout = -1;  // -1 means profile until cancelled
+std::vector<DWORD> cmdline_thread_ids;
 std::vector<std::wstring> tmp_files;
 Prefs prefs;
 wxConfig config(_T(APPNAME), _T(VENDOR));
@@ -163,6 +178,15 @@ void ProfilerGUI::DestroyProgressWindow()
 /// if profiling was aborted by the user.
 std::wstring ProfilerGUI::LaunchProfiler(const AttachInfo *info)
 {
+	// AA: 20210822 if we're attaching to all threads, launch a debugger to update the threads
+	Debugger *debugger = NULL;
+	if (info->attach_all_threads)
+	{
+		DWORD processId = GetProcessId(info->process_handle);
+		if (processId)
+			debugger = new Debugger(processId);
+	}
+
 	//------------------------------------------------------------------------
 	//create the profiler thread
 	//------------------------------------------------------------------------
@@ -170,9 +194,9 @@ std::wstring ProfilerGUI::LaunchProfiler(const AttachInfo *info)
 	ProfilerThread* profilerthread = new ProfilerThread(
 		info->process_handle,
 		info->thread_handles,
-		info->sym_info
+		info->sym_info,
+		debugger
 		);
-
 
 	//------------------------------------------------------------------------
 	//start the profiler thread
@@ -203,16 +227,35 @@ std::wstring ProfilerGUI::LaunchProfiler(const AttachInfo *info)
 			if (timer.fired)
 			{
 				timer.fired = false;
-				if (!captureWin->UpdateProgress(profilerthread->getStatus(), profilerthread->getSampleProgress(), profilerthread->getNumThreadsRunning(), info->limit_profile_time))
+
+				const wchar_t *status = profilerthread->getStatus();
+				int numSamples = profilerthread->getSampleProgress();
+				int numThreads = profilerthread->getNumThreadsRunning();
+				int timeout = info->limit_profile_time;
+				double elapsed = profilerthread->getDuration();
+
+				wchar_t tmp[256];
+				if (!status)
+				{
+					if (timeout == -1)
+						swprintf(tmp, L"%i samples, %.1fs elapsed, %i threads running", numSamples, elapsed, numThreads);
+					else
+						swprintf(tmp, L"%i samples, %.1fs/%ds elapsed, %i threads running", numSamples, elapsed, timeout, numThreads);
+					status = tmp;
+				}
+
+				double progress = timeout == -1 ? std::numeric_limits<double>::quiet_NaN() : (elapsed / timeout);
+
+				if (!captureWin->UpdateProgress(status, progress))
+					break;
+
+				if (progress >= 1)
 					break;
 			}
 
 			profilerthread->setPaused(captureWin->Paused());
 
 			if (profilerthread->getNumThreadsRunning() <= 0)
-				break;
-
-			if (info->limit_profile_time >= 0 && stopwatch.Time() >= info->limit_profile_time*1000)
 				break;
 
 			WaitMessage(); // in lieu of a wxWaitForEvent
@@ -270,6 +313,7 @@ std::wstring ProfilerGUI::LaunchProfiler(const AttachInfo *info)
 AttachInfo::AttachInfo()
 {
 	process_handle = NULL;
+	attach_all_threads = true;
 	sym_info = NULL;
 	limit_profile_time = cmdline_timeout;
 }
@@ -280,6 +324,59 @@ AttachInfo::~AttachInfo()
 		CloseHandle(process_handle);
 	if (sym_info)
 		delete sym_info;
+}
+
+static HANDLE getMostBusyThread(ProcessInfo& process_info)
+{
+	int max = -1;
+	HANDLE mostBusy = NULL;
+	for (auto thread_info = process_info.threads.begin(); thread_info != process_info.threads.end(); ++thread_info)
+	{
+		thread_info->recalcUsage(0);
+		if (max < thread_info->totalCpuTimeMs)
+		{
+			max = thread_info->totalCpuTimeMs;
+			mostBusy = thread_info->getThreadHandle();
+		}
+	}
+
+	return mostBusy;
+}
+
+static bool getAttachToAllThreads()
+{
+	return prefs.attachMode == ATTACH_ALL_THREAD;
+}
+
+static std::vector<HANDLE> getThreadsByAttachMode(ProcessInfo& process_info)
+{
+	std::vector<HANDLE> threadHandles;
+
+	if (process_info.threads.empty())
+		return threadHandles;
+
+	switch (prefs.attachMode)
+	{
+	case ATTACH_MAIN_THREAD:
+		threadHandles.push_back(process_info.threads.front().getThreadHandle());
+		return threadHandles;
+
+	case ATTACH_MOST_BUSY_THREAD:
+	{
+		HANDLE mostBusy = getMostBusyThread(process_info);
+		if (mostBusy)
+			threadHandles.push_back(mostBusy);
+		return threadHandles;
+	}
+
+	default: // all thread
+		threadHandles.reserve(process_info.threads.size());
+		for (auto thread_info = process_info.threads.begin(); thread_info != process_info.threads.end(); ++thread_info)
+		{
+			threadHandles.push_back(thread_info->getThreadHandle());
+		}
+		return threadHandles;
+	}
 }
 
 AttachInfo *ProfilerGUI::RunProcess(const std::wstring &run_cmd, const std::wstring &run_cwd)
@@ -300,55 +397,44 @@ AttachInfo *ProfilerGUI::RunProcess(const std::wstring &run_cmd, const std::wstr
 
 	std::unique_ptr<AttachInfo> output(new AttachInfo);
 	output->process_handle = pi.hProcess;
-	output->thread_handles.push_back(pi.hThread);
+
+	if (cmdline_delay == 0)
+	{
+		output->thread_handles.push_back(pi.hThread); // Main thread only
+	}
+	else
+	{
+		wxProgressDialog progressdlg(APPNAME, "Waiting...",
+			cmdline_delay * 1000, theMainWin,
+			wxPD_APP_MODAL|wxPD_AUTO_HIDE|wxPD_CAN_SKIP|wxPD_CAN_ABORT);
+		int start = GetTickCount();
+		int total = cmdline_delay * 1000;
+
+		while (true)
+		{
+			wxYieldIfNeeded();
+			int now = GetTickCount();
+			int elapsed = now - start;
+			if (elapsed > cmdline_delay * 1000)
+				break;
+			int remaining = total - elapsed;
+			progressdlg.Update(elapsed);
+			if (progressdlg.WasCancelled())
+				throw SleepyException(L"User abort");
+			if (progressdlg.WasSkipped())
+				break;
+			Sleep(std::min(remaining, 100));
+		}
+
+		// Re-query process information to learn about new threads that have since spawned
+		ProcessInfo process_info = ProcessInfo::FindProcessById(pi.dwProcessId);
+		output->thread_handles = getThreadsByAttachMode(process_info);
+		output->attach_all_threads = getAttachToAllThreads();
+	}
+
 	output->sym_info = new SymbolInfo;
 	TryLoadSymbols(output.get());
 	return output.release();
-}
-
-static HANDLE getMostBusyThread(ProcessInfo& process_info)
-{
-	int max = -1;
-	HANDLE mostBusy = NULL;
-	for (auto thread_info = process_info.threads.begin(); thread_info != process_info.threads.end(); ++thread_info)
-	{
-		thread_info->recalcUsage(0);
-		if (max < thread_info->totalCpuTimeMs)
-		{
-			max = thread_info->totalCpuTimeMs;
-			mostBusy = thread_info->getThreadHandle();
-		}
-	}
-
-	return mostBusy;
-}
-
-static std::vector<HANDLE> getThreadsByAttachMode(ProcessInfo& process_info)
-{
-	std::vector<HANDLE> threadHandles;
-
-	if (process_info.threads.empty())
-		return threadHandles;
-
-	switch (prefs.attachMode)
-	{
-	case ATTACH_MAIN_THREAD:
-		threadHandles.push_back(process_info.threads.front().getThreadHandle());
-		return threadHandles;
-
-	case ATTACH_MOST_BUSY_THREAD:
-		if (HANDLE mostBusy = getMostBusyThread(process_info))
-			threadHandles.push_back(mostBusy);
-		return threadHandles;
-
-	default: // all thread
-		threadHandles.reserve(process_info.threads.size());
-		for (auto thread_info = process_info.threads.begin(); thread_info != process_info.threads.end(); ++thread_info)
-		{
-			threadHandles.push_back(thread_info->getThreadHandle());
-		}
-		return threadHandles;
-	}
 }
 
 AttachInfo * ProfilerGUI::AttachToProcess(const std::wstring& processId)
@@ -363,9 +449,10 @@ AttachInfo * ProfilerGUI::AttachToProcess(const std::wstring& processId)
 		throw SleepyException("Not valid process id: "+ processId);
 	}
 	ProcessInfo process_info = ProcessInfo::FindProcessById(processId_dw);
-	AttachInfo* attach_info =new AttachInfo();
+	AttachInfo* attach_info = new AttachInfo();
 	attach_info->process_handle = process_info.getProcessHandle();
 	attach_info->thread_handles = getThreadsByAttachMode(process_info);
+	attach_info->attach_all_threads = getAttachToAllThreads();
 	attach_info->sym_info = new SymbolInfo();
 
 	TryLoadSymbols(attach_info);
@@ -428,7 +515,7 @@ std::wstring ProfilerGUI::ObtainProfileData()
 
 		case ThreadPicker::ATTACH:
 			{
-				std::unique_ptr<AttachInfo> ai(threadpicker->attach_info);
+				std::unique_ptr<AttachInfo> ai(threadpicker->attach_info);
 				threadpicker->attach_info = NULL;
 				threadpicker.reset();
 				return LaunchProfiler(ai.get());
@@ -474,23 +561,19 @@ bool ProfilerGUI::OnInit()
 
 		sleepy_icon = wxICON(sleepy);
 
-		if (!wxApp::OnInit())
-			return false;
-
 		// Make a default cache in their user directory.
 		wxString symCache = wxStandardPaths::Get().GetUserLocalDataDir();
 
-		prefs.symSearchPath = config.Read("SymbolSearchPath", "");
-		prefs.useSymServer = config.Read("UseSymbolServer", 1) != 0;
-		prefs.symServer = config.Read("SymbolServer", "http://msdl.microsoft.com/download/symbols");
-		prefs.symCacheDir = config.Read("SymbolCache", symCache);
+		prefs.symSearchPath.SetConfigValue(config.Read("SymbolSearchPath", ""));
+		prefs.useSymServer.SetConfigValue(config.Read("UseSymbolServer", 1) != 0);
+		prefs.symServer.SetConfigValue(config.Read("SymbolServer", "http://msdl.microsoft.com/download/symbols"));
+		prefs.symCacheDir.SetConfigValue(config.Read("SymbolCache", symCache));
 		prefs.useWinePref = config.Read("UseWine", (long)0) != 0;
-		prefs.saveMinidump = config.Read("SaveMinidump", -1);
-		prefs.throttle = config.Read("SpeedThrottle", 100);
-		if (prefs.throttle < 1)
-			prefs.throttle = 1;
-		if (prefs.throttle > 100)
-			prefs.throttle = 100;
+		prefs.saveMinidump.SetConfigValue(config.Read("SaveMinidump", -1));
+		prefs.throttle.SetConfigValue(prefs.ValidateThrottle(config.Read("SpeedThrottle", 100)));
+
+		if (!wxApp::OnInit())
+			return false;
 
 		return true;
 	}
@@ -562,6 +645,18 @@ bool ProfilerGUI::Run()
 	else if (!cmdline_attach.empty())
 	{
 		std::unique_ptr<AttachInfo> info(AttachToProcess(cmdline_attach));
+		if (!cmdline_thread_ids.empty()) {
+			std::vector<HANDLE> profile_threads;
+			for (auto tid_h : info->thread_handles) {
+				DWORD test_tid = GetThreadId(tid_h);
+				if (std::find(cmdline_thread_ids.begin(),cmdline_thread_ids.end(),test_tid) != cmdline_thread_ids.end()) {
+					profile_threads.push_back(tid_h);
+				}
+			}
+			info->thread_handles = profile_threads;
+			// Do not attach to any new threads created after this point in time.
+			info->attach_all_threads = false;
+		}
 		filename = LaunchProfiler(info.get());
 	}
 	else if (!cmdline_load.empty())
@@ -585,13 +680,13 @@ bool ProfilerGUI::Run()
 
 int ProfilerGUI::OnExit()
 {
-	config.Write("SymbolSearchPath", prefs.symSearchPath);
-	config.Write("UseSymbolServer", prefs.useSymServer);
-	config.Write("SymbolServer", prefs.symServer);
-	config.Write("SymbolCache", prefs.symCacheDir);
+	config.Write("SymbolSearchPath", prefs.symSearchPath.GetConfigValue());
+	config.Write("UseSymbolServer", prefs.useSymServer.GetConfigValue());
+	config.Write("SymbolServer", prefs.symServer.GetConfigValue());
+	config.Write("SymbolCache", prefs.symCacheDir.GetConfigValue());
 	config.Write("UseWine", prefs.useWinePref);
-	config.Write("SaveMinidump", prefs.saveMinidump);
-	config.Write("SpeedThrottle", prefs.throttle);
+	config.Write("SaveMinidump", prefs.saveMinidump.GetConfigValue());
+	config.Write("SpeedThrottle", prefs.throttle.GetConfigValue());
 
 	return wxApp::OnExit();
 }
@@ -606,6 +701,10 @@ void ProfilerGUI::OnInitCmdLine(wxCmdLineParser& parser)
 bool ProfilerGUI::OnCmdLineParsed(wxCmdLineParser& parser)
 {
 	wxString param;
+	long long_param;
+
+	// command line options that override saved setting, will not replace
+	//   the data in the saved config.
 
 	if (parser.Found("q"))
 		wxLog::EnableLogging(false);
@@ -622,12 +721,36 @@ bool ProfilerGUI::OnCmdLineParsed(wxCmdLineParser& parser)
 		cmdline_load = parser.GetParam(0);
 	if (parser.Found("o", &param))
 		cmdline_save = param.c_str();
+	if (!parser.Found("d", &cmdline_delay))
+		cmdline_delay = 0;
 	if (!parser.Found("t", &cmdline_timeout))
 		cmdline_timeout = -1;
 	if (parser.Found("r", &param))
 		cmdline_run = param.c_str();
 	if (parser.Found("a", &param))
 		cmdline_attach = param.c_str();
+	if (parser.Found("thread", &param))
+	{
+		auto tids_str = wxSplit(param,',');
+		for (size_t i=0; i<tids_str.GetCount(); i++)
+		{
+			long tid;
+			if (tids_str[i].ToLong(&tid))
+			{
+				cmdline_thread_ids.push_back(tid);
+			}
+			else
+			{
+				wxMessageBox(wxString::Format(wxT("Ignoring malformed thread ID in /thread option: %s"), tids_str[i]),
+							 APPNAME,
+							 wxICON_WARNING);
+			}
+		}
+	}
+	if (parser.Found("minidump",&long_param))
+		prefs.saveMinidump.Override(long_param);
+	if (parser.Found("samplerate",&long_param))
+		prefs.throttle.Override(prefs.ValidateThrottle(long_param));
 	if (parser.Found("wine"))
 		prefs.useWineSwitch = true;
 	if (parser.Found("mingw"))
@@ -636,6 +759,14 @@ bool ProfilerGUI::OnCmdLineParsed(wxCmdLineParser& parser)
 		prefs.attachMode = ATTACH_MAIN_THREAD;
 	if (parser.Found("mbt", &param))
 		prefs.attachMode = ATTACH_MOST_BUSY_THREAD;
+	if (parser.Found("symsearchpath", &param))
+		prefs.symSearchPath.Override(param);
+	if (parser.Found("symcachedir", &param))
+		prefs.symCacheDir.Override(param);
+	if (auto state = parser.FoundSwitch("usesymserver"))
+		prefs.useSymServer.Override(state == wxCMD_SWITCH_ON);
+	if (parser.Found("symserver", &param))
+		prefs.symServer.Override(param);
 
 	return true;
 }
